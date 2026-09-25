@@ -3,7 +3,8 @@ import {
 } from '@builder.io/qwik';
 import { Checkbox, Modal, Tabs } from '@qwik-ui/headless';
 import type { ArchiveRecord, ArchiveState, FieldKey, MatchCandidate, RecordGroup } from './types';
-import { computeMatches, fieldValue, scorePair } from './utils/matching';
+import { computeMatches, fieldValue } from './utils/matching';
+import { applyMerge, applyWithdraw, collectMergeBlocks, mergeSummary, type MergeBlockInfo } from './utils/merge';
 import { seedState } from './data/seed';
 
 const STORAGE_KEY = 'sologsb-1020-archive-state-v1';
@@ -36,6 +37,8 @@ export default component$(() => {
   const selectedMatchIds = useSignal<string[]>([]);
   const importOpen = useSignal(false);
   const mergeOpen = useSignal(false);
+  const blockOpen = useSignal(false);
+  const mergeBlocks = useSignal<MergeBlockInfo[]>([]);
   const importGroup = useSignal<RecordGroup>('A');
   const importRaw = useSignal('');
   const importText = useSignal('');
@@ -142,6 +145,13 @@ export default component$(() => {
   const openMerge = $(() => {
     const match = activeMatch.value;
     if (!match) return;
+    // 重复合并拦截：任一侧记录已并入未撤回的合并时，先拦下并指明先前那一次
+    const blocks = collectMergeBlocks(state, match.leftId, match.rightId);
+    if (blocks.length) {
+      mergeBlocks.value = blocks;
+      blockOpen.value = true;
+      return;
+    }
     state.activeMatchId = match.id;
     fieldLabels.forEach(([field]) => {
       const left = recordById(state, match.leftId);
@@ -159,41 +169,41 @@ export default component$(() => {
   const mergeCurrent = $(() => {
     const match = activeMatch.value;
     if (!match) return;
-    const left = recordById(state, match.leftId);
-    const right = recordById(state, match.rightId);
-    if (!left || !right) return;
+    // 兜底：正常入口已拦截，此处防止绕过窗口再次合并已并掉的记录
+    if (collectMergeBlocks(state, match.leftId, match.rightId).length) {
+      mergeOpen.value = false;
+      notify('存在已并入其他合并的记录，请先在合并追溯页撤回先前的合并');
+      return;
+    }
     capture();
-    const values: Partial<Record<FieldKey, string>> = {};
-    fieldLabels.forEach(([field]) => {
-      const source = choices[field];
-      const pick = source === 'combine' ? `${fieldValue(left, field)}；${fieldValue(right, field)}` : fieldValue(source === 'A' ? left : right, field);
-      values[field] = pick;
-    });
-    const merged: ArchiveRecord = {
-      ...left,
-      ...values,
-      people: values.people?.split(/[；、,，]/).map((item) => item.trim()).filter(Boolean) ?? left.people,
-      places: values.places?.split(/[；、,，]/).map((item) => item.trim()).filter(Boolean) ?? left.places,
-      status: 'merged',
-      updatedAt: new Date().toISOString()
-    };
-    state.records = [...state.records.filter((record) => record.id !== left.id && record.id !== right.id), merged];
-    state.matches.forEach((item) => {
-      if (item.id === match.id) item.status = 'merged';
-      else if (item.leftId === left.id || item.rightId === right.id || item.leftId === right.id || item.rightId === left.id) item.status = 'rejected';
-    });
-    state.merges.unshift({
-      id: crypto.randomUUID(),
-      matchId: match.id,
-      leftId: left.id,
-      rightId: right.id,
-      chosen: { ...choices },
-      values,
-      mergedAt: new Date().toISOString()
-    });
-    commit('合并两条记录', `保留 ${Object.values(choices).filter((choice) => choice === 'A').length} 个 A 来源字段、${Object.values(choices).filter((choice) => choice === 'B').length} 个 B 来源字段`, [left.id, right.id, merged.id]);
+    const outcome = applyMerge(state, match.id, choices);
+    if (!outcome) {
+      mergeOpen.value = false;
+      notify('原始记录缺失，无法完成合并');
+      return;
+    }
+    const chosenA = Object.values(choices).filter((choice) => choice === 'A').length;
+    const chosenB = Object.values(choices).filter((choice) => choice === 'B').length;
+    commit('合并两条记录', `保留 ${chosenA} 个 A 来源字段、${chosenB} 个 B 来源字段`, [outcome.leftId, outcome.rightId, outcome.mergedId]);
     mergeOpen.value = false;
     notify('记录已合并，来源与字段选择已写入审计记录');
+  });
+
+  const withdrawMerge = $((mergeId: string) => {
+    const merge = state.merges.find((item) => item.id === mergeId);
+    if (!merge || merge.withdrawnAt) return;
+    // 旧版本留存的合并没有原始记录快照，无法恢复编号与字段，不予撤回
+    if (!merge.leftRecord || !merge.rightRecord) {
+      notify('该合并缺少原始记录快照，无法撤回');
+      return;
+    }
+    // 撤销/重做沿用同一套快照，必须在状态变更前抓取
+    capture();
+    const result = applyWithdraw(state, mergeId);
+    if (result === null || result === 'missing-snapshot') return;
+    state.activeMatchId = result.merge.matchId;
+    commit('撤回合并', `已撤回「${result.label}」，两条原始记录连同编号与字段回到工作台，${result.restoredMatchCount} 条匹配退回待复核`, [result.merge.leftId, result.merge.rightId]);
+    notify('已撤回合并，两条原始记录已回到工作台，匹配退回待复核');
   });
 
   const parseImport = $(() => {
@@ -443,11 +453,32 @@ export default component$(() => {
               })() : <div class="empty-state">从左侧选择一条匹配查看字段来源。</div>}
             </Tabs.Panel>
             <Tabs.Panel class="tab-panel">
-              {state.merges.length ? state.merges.map((merge) => {
-                const left = recordById(state, merge.leftId);
-                const right = recordById(state, merge.rightId);
-                return <details class="merge-log" key={merge.id}><summary>{left?.title ?? merge.leftId} ↔ {right?.title ?? merge.rightId}</summary><p>{new Date(merge.mergedAt).toLocaleString('zh-CN')}</p><ul>{Object.entries(merge.chosen).map(([field, choice]) => <li key={field}><strong>{fieldLabels.find(([key]) => key === field)?.[1]}</strong><span>保留 {choice === 'A' ? 'A 来源' : choice === 'B' ? 'B 来源' : '双来源拼接'}：{merge.values[field as FieldKey]}</span></li>)}</ul></details>;
-              }) : <div class="empty-state">还没有合并记录。完成一次字段合并后，来源选择会出现在这里。</div>}
+              {state.merges.length ? <>
+                <p class="trace-hint">合并来源选错时可撤回：两条原始记录连同编号与字段回到工作台，匹配退回待复核，撤回动作记入处理记录，且可随撤销 / 重做恢复。</p>
+                {state.merges.map((merge) => {
+                  const leftTitle = merge.leftRecord?.title ?? recordById(state, merge.leftId)?.title ?? merge.leftId;
+                  const rightTitle = merge.rightRecord?.title ?? recordById(state, merge.rightId)?.title ?? merge.rightId;
+                  const leftIdentifier = merge.leftRecord?.identifier ?? recordById(state, merge.leftId)?.identifier ?? '';
+                  const rightIdentifier = merge.rightRecord?.identifier ?? recordById(state, merge.rightId)?.identifier ?? '';
+                  const withdrawn = Boolean(merge.withdrawnAt);
+                  const restorable = Boolean(merge.leftRecord && merge.rightRecord);
+                  return <details class={`merge-log ${withdrawn ? 'withdrawn' : ''}`} key={merge.id}>
+                    <summary><span>{leftTitle} ↔ {rightTitle}</span>{withdrawn && <em class="withdrawn-badge">已撤回</em>}</summary>
+                    <p class="merge-meta">{new Date(merge.mergedAt).toLocaleString('zh-CN')}<code>{leftIdentifier || '—'} ↔ {rightIdentifier || '—'}</code></p>
+                    {withdrawn && <p class="withdrawn-note">已于 {new Date(merge.withdrawnAt!).toLocaleString('zh-CN')} 撤回，原始记录已回到工作台、匹配退回待复核。</p>}
+                    <ul>{Object.entries(merge.chosen).map(([field, choice]) => <li key={field}><strong>{fieldLabels.find(([key]) => key === field)?.[1]}</strong><span>保留 {choice === 'A' ? 'A 来源' : choice === 'B' ? 'B 来源' : '双来源拼接'}：{merge.values[field as FieldKey]}</span></li>)}</ul>
+                    {!withdrawn && <div class="merge-log-actions">
+                      <button
+                        class="button small danger"
+                        disabled={!restorable}
+                        title={restorable ? '恢复两条原始记录并将匹配退回待复核' : '该合并早于撤回功能，缺少原始记录快照，无法撤回'}
+                        onClick$={() => withdrawMerge(merge.id)}
+                      >撤回合并</button>
+                      {!restorable && <small class="merge-log-warn">缺少原始记录快照，仅能在审计记录中追溯</small>}
+                    </div>}
+                  </details>;
+                })}
+              </> : <div class="empty-state">还没有合并记录。完成一次字段合并后，来源选择会出现在这里。</div>}
             </Tabs.Panel>
             <Tabs.Panel class="tab-panel shortcut-panel">
               <div><kbd>J / K</kbd><span>下一条 / 上一条可疑匹配</span></div><div><kbd>Enter</kbd><span>打开逐字段合并窗口</span></div><div><kbd>C / R</kbd><span>确认 / 忽略当前匹配</span></div><div><kbd>Ctrl + Z / Y</kbd><span>撤销 / 重做</span></div><div><kbd>Ctrl + I</kbd><span>打开导入窗口</span></div><div><kbd>Ctrl/⌘ + Enter</kbd><span>在导入框中提交记录</span></div>
@@ -469,6 +500,7 @@ export default component$(() => {
           <div class="rule-row"><span>1</span><p>每个字段保留 A / B 来源，可在合并窗口中单独选择或拼接。</p></div>
           <div class="rule-row"><span>2</span><p>原始记录、合并结果和忽略理由都进入本地审计轨迹。</p></div>
           <div class="rule-row"><span>3</span><p>记录列表使用分批窗口渲染，导入大量数据时仍只挂载当前窗口。</p></div>
+          <div class="rule-row"><span>4</span><p>合并可在追溯页撤回，原始记录与匹配原样恢复；已并入合并的记录再次合并会被拦下，并指明先前并到了哪一次。</p></div>
         </article>
       </section>
 
@@ -509,6 +541,23 @@ export default component$(() => {
               <Modal.Footer class="modal-footer"><Modal.Close class="button ghost">取消</Modal.Close><button class="button primary" onClick$={mergeCurrent}>生成合并记录</button></Modal.Footer>
             </>;
           })()}
+        </Modal.Panel>
+      </Modal.Root>
+
+      <Modal.Root bind:show={blockOpen} closeOnBackdropClick>
+        <Modal.Panel class="modal-panel block-modal">
+          <Modal.Header class="modal-header"><div><span class="eyebrow">MERGE BLOCKED</span><Modal.Title>这些记录已并入先前的合并</Modal.Title></div><Modal.Close class="modal-close">×</Modal.Close></Modal.Header>
+          <Modal.Description class="modal-description">为避免同一条档案被重复合并，本次逐字段合并已拦下。若先前的字段来源选错，请先到「合并追溯」页撤回对应的合并，两条原始记录会连同编号与字段回到工作台。</Modal.Description>
+          <div class="block-list">
+            {mergeBlocks.value.map((block, index) => <div class="block-item" key={index}>
+              <strong>{block.recordTitle}{block.recordIdentifier && <code>{block.recordIdentifier}</code>}</strong>
+              <p>已于 {new Date(block.mergedAt).toLocaleString('zh-CN')} 并入合并「{block.mergeLabel}」</p>
+            </div>)}
+          </div>
+          <Modal.Footer class="modal-footer">
+            <Modal.Close class="button ghost">稍后再看</Modal.Close>
+            <button class="button primary" onClick$={() => { blockOpen.value = false; panelTab.value = 1; }}>前往合并追溯撤回</button>
+          </Modal.Footer>
         </Modal.Panel>
       </Modal.Root>
     </div>

@@ -37,6 +37,15 @@ export interface MergeResult {
   chosen: Partial<Record<FieldKey, RecordGroup | 'combine'>>;
   values: Partial<Record<FieldKey, string>>;
   mergedAt: string;
+  /** 合并生成的新记录 id */
+  mergedId?: string;
+  /** 合并时两条原始记录的快照，供撤回时原样恢复 */
+  leftRecord?: ArchiveRecord;
+  rightRecord?: ArchiveRecord;
+  /** 因这次合并被连带拒绝的其他匹配 */
+  autoRejectedMatchIds?: string[];
+  /** 撤回时间；存在即表示该次合并已撤回 */
+  withdrawnAt?: string;
 }
 
 export interface AuditEntry {
