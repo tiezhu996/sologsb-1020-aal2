@@ -29,14 +29,24 @@ export interface MatchCandidate {
   reviewedAt?: string;
 }
 
+export interface MatchStatusSnapshot {
+  id: string;
+  status: MatchStatus;
+  reviewedAt?: string;
+}
+
 export interface MergeResult {
   id: string;
   matchId: string;
   leftId: string;
   rightId: string;
+  mergedId: string;
+  originals?: [ArchiveRecord, ArchiveRecord];
   chosen: Partial<Record<FieldKey, RecordGroup | 'combine'>>;
   values: Partial<Record<FieldKey, string>>;
+  collateral?: MatchStatusSnapshot[];
   mergedAt: string;
+  withdrawnAt?: string;
 }
 
 export interface AuditEntry {

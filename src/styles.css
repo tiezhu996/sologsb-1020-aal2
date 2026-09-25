@@ -98,12 +98,27 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .split-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; width: 100%; }
 .split-actions .button { width: 100%; }
 .merge-log { margin-bottom: 8px; padding: 10px; border: 1px solid #dce4e6; border-radius: 8px; background: #f7f9f9; font-size: 10px; }
-.merge-log summary { cursor: pointer; font-weight: 700; }
-.merge-log p { color: var(--muted); }
+.merge-log.withdrawn { opacity: .66; border-style: dashed; background: #f2f4f4; }
+.merge-log summary { cursor: pointer; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+.merge-index { display: inline-grid; place-items: center; min-width: 26px; padding: 2px 5px; color: white; border-radius: 5px; background: #3f7585; font-size: 9px; font-weight: 800; }
+.merge-state { margin-left: auto; padding: 2px 7px; border-radius: 8px; font-size: 8px; font-weight: 700; }
+.merge-state.state-active { color: #8b5d18; background: #faedcf; }
+.merge-state.state-withdrawn { color: #6d5955; background: #e6e2e0; }
+.merge-time { margin: 6px 0 4px; color: var(--muted); }
+.merge-ids { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 8px; color: #5e7178; }
+.merge-ids code { padding: 1px 5px; border-radius: 4px; background: #e8eeef; color: #3f6671; font-size: 9px; }
+.merge-footer { margin-top: 8px; display: flex; justify-content: flex-end; }
+.merge-footer small { color: var(--muted); }
 .merge-log ul { padding-left: 16px; }
 .merge-log li { margin: 6px 0; }
 .merge-log li strong { display: block; }
 .merge-log li span { color: #5e7178; }
+.guard-block { margin-top: 12px; padding: 11px 12px; border: 1px solid #e0b3a8; border-left: 3px solid var(--red); border-radius: 8px; background: #fbf1ee; }
+.guard-block strong { color: #93412f; font-size: 11px; }
+.guard-block p { margin: 5px 0 9px; color: #7a5850; font-size: 10px; line-height: 1.6; }
+.guard-block.merged-note { border-color: #b7ccd3; border-left-color: var(--cyan); background: #eef5f7; }
+.guard-block.merged-note strong { color: #2d5f70; }
+.guard-block.merged-note p { color: #55717a; }
 .shortcut-panel { display: grid; align-content: start; gap: 8px; }
 .shortcut-panel div { display: grid; grid-template-columns: 112px 1fr; align-items: center; padding: 9px; border-bottom: 1px solid #e5eaec; font-size: 10px; }
 kbd { justify-self: start; padding: 3px 6px; border: 1px solid #c8d2d5; border-bottom-width: 2px; border-radius: 5px; background: #f0f3f4; font-family: ui-monospace, monospace; font-size: 9px; }
